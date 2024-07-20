@@ -1,5 +1,7 @@
 import numpy as np
+from scipy.sparse import csr_matrix, lil_matrix
 import random
+import tqdm
 
 def initialize_local_trust_matrix(n=100):
     return np.zeros((n, n))
@@ -26,32 +28,44 @@ def generate_random_peer_interactions(local_scores,m=1_000):
     return local_scores
 
 def normalize_local_scores(local_scores, global_scores):
-    normalized_local_scores = np.zeros(local_scores.shape)
-    np.fill_diagonal(local_scores, 0)  # Set diagonal elements to 0 to exclude self-voting
+    n = local_scores.shape[0]
+    normalized_local_scores = lil_matrix((n, n))
 
-    for i in range(local_scores.shape[0]):
-        row_sum = np.sum(np.maximum(local_scores[i], 0))
+    # Set diagonal elements to 0 to exclude self-voting
+    local_scores.setdiag(0)
+
+    for i in tqdm.tqdm(range(n)):
+        row = local_scores.getrow(i)
+        row_sum = row.data[row.data > 0].sum()
+
         if row_sum > 0:
-            normalized_local_scores[i] = np.maximum(local_scores[i], 0) / row_sum
+            normalized_row = row.multiply(row > 0) / row_sum
+            normalized_local_scores[i] = normalized_row
         else:
             # Handle the case where row sum is 0
-            # This can be adjusted based on how you want to handle this scenario
-            normalized_local_scores[i] = global_scores
-    return normalized_local_scores
+            normalized_local_scores[i] = csr_matrix(global_scores)
+
+    return normalized_local_scores.tocsr()
 
 # From whitepaper, Algorithm 2: Basic EigenTrust algorithm
 def basic_eigen_trust(local_scores, global_scores, alpha=0.1, convergence_threshold=0.01):
-    
-    #Normalize the local_scores first. Note that this agnostic to being provided normalized or non-normalized as "double normalizing" does not change scores
+    # Ensure local_scores is a csr_matrix
+    if not isinstance(local_scores, csr_matrix):
+        local_scores = csr_matrix(local_scores) #If this step is failing try intializing local_scores as a coo_matrix (scipy.sparse)
+
+    # Convert global_scores to a NumPy array if it is not already one
+    if not isinstance(global_scores, np.ndarray):
+        global_scores = np.array(global_scores)
+
+    # Normalize the local_scores first
     local_scores = normalize_local_scores(local_scores, global_scores)
-    n = local_scores.shape[0]
 
     while True:
         # Step 1: Multiply the transpose of normalized local scores with global scores
-        new_global_scores = np.dot(local_scores.T, global_scores)
+        new_global_scores = local_scores.T.dot(global_scores)
 
         # Step 2: Blend with existing global scores
-        new_global_scores = (1 - alpha) * new_global_scores + alpha * np.array(global_scores)
+        new_global_scores = (1 - alpha) * new_global_scores + alpha * global_scores
 
         # Step 3: Check for convergence
         delta = np.linalg.norm(new_global_scores - global_scores)
@@ -59,6 +73,7 @@ def basic_eigen_trust(local_scores, global_scores, alpha=0.1, convergence_thresh
             break
 
         global_scores = new_global_scores
+
     return global_scores
 
 def add_new_peers(local_scores, global_scores, new_peers_count, malicious_collective=False):
@@ -92,6 +107,6 @@ if __name__ == "__main__":
     local_scores = generate_random_peer_interactions(local_scores, m)
     initial_global_scores = initalize_global_trust_scores(n, p)
     normalized_local_scores = normalize_local_scores(local_scores, initial_global_scores)
-    final_global_scores = eigen_trust(normalized_local_scores, initial_global_scores, alpha, convergence_threshold)
+    final_global_scores = basic_eigen_trust(normalized_local_scores, initial_global_scores, alpha, convergence_threshold)
 
     print(final_global_scores)
